@@ -1,0 +1,8 @@
+{
+  "appId": "com.islamdwakat.ifraz",
+  "appName": "إفراز الأراضي",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}
