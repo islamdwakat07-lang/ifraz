@@ -150,7 +150,7 @@ tr:last-child td{border-bottom:0}
 <section class="panel">
   <h2><span class="step">2</span>الملاك والحصص</h2>
   <div class="row">
-    <label class="btn primary">استيراد PDF من حاسب الكواشين<input type="file" id="pdfFile" accept="application/pdf,.pdf"></label>
+    <label class="btn primary">استيراد من حاسب الكواشين (PDF أو CSV)<input type="file" id="pdfFile" accept="application/pdf,.pdf,.csv,text/csv"></label>
     <button id="togglePasteOwners">لصق جدول</button>
     <button id="addOwner">+ مالك</button>
   </div>
@@ -862,7 +862,7 @@ function renderRoadEnd() {
 function renderOwners() {
   renderRoadEnd();
   const box = $('owners'), sum = S.owners.reduce((a, o) => a + (+o.area || 0), 0);
-  if (!S.owners.length) { box.innerHTML = '<div class="empty">لا يوجد ملاك بعد. استورد PDF من حاسب الكواشين أو أضف مالكاً.</div>'; return; }
+  if (!S.owners.length) { box.innerHTML = '<div class="empty">لا يوجد ملاك بعد. استورد ملف PDF أو CSV من حاسب الكواشين، أو أضف مالكاً.</div>'; return; }
   box.innerHTML = `<div class="orow ohead"><span></span><span>المالك</span><span>الحصة</span><span class="poshd">الموقع المطلوب</span><span class="pct">النسبة</span><span></span></div>` +
     S.owners.map((o, i) => `<div class="orow" data-id="${o.id}">
       <span class="idx"><span class="sw" style="background:${oColor(i, .45)}"></span></span>
@@ -920,23 +920,62 @@ function applyOwners(replace) {
 $('useOwners').addEventListener('click', () => applyOwners(true));
 $('appendOwners').addEventListener('click', () => applyOwners(false));
 
+/* بيانات حاسب الكواشين: ورثة المتوفى يحلّون مكانه */
+function applyKData(d) {
+  const rows = (d.owners || []).filter(r => r && r.n && +r.a > 0);
+  if (!rows.length) { toast('لم أجد ملاكاً في الملف.'); return; }
+  S.owners = rows.map(r => ({ id: uid++, name: String(r.n), area: Math.round(+r.a * 10000) / 10000 }));
+  const h = d.h || {};
+  const t = [h.vil, h.basin ? 'حوض ' + h.basin : '', h.parcel ? 'قطعة ' + h.parcel : ''].filter(Boolean).join(' – ');
+  if (t) { S.landTitle = t; $('landTitle').value = t; }
+  S.sample = false; S.roadEndIdx = 0; S.sel = null; changed(true);
+  const sum = S.owners.reduce((a, o) => a + o.area, 0), T = S.boundary.length > 2 ? G.area(S.boundary) : 0;
+  const heirs = rows.filter(r => r.of).length;
+  toast(`قرأت جدول حاسب الكواشين. عدد الملاك: ${rows.length}${heirs ? ` (منهم ${heirs} ورثة بدل المتوفين)` : ''}. مجموع الحصص ${fmt(sum)} م²` + (T ? `، ومساحة الرسم ${fmt(T)} م². توزّع النسب على مساحة الرسم.` : '.'), 9000);
+}
+function importKCsv(text) {
+  const rows = [], cur = []; let f = '', q = false;
+  text = text.replace(/^\ufeff/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true; else if (c === ',') { cur.push(f); f = ''; } else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; cur.push(f); rows.push(cur.splice(0)); f = ''; } else f += c;
+  }
+  if (f || cur.length) { cur.push(f); rows.push(cur.splice(0)); }
+  const hi = rows.findIndex(r => r[2] === 'الاسم' && /المساحة/.test(r[6] || ''));
+  if (hi < 0) { toast('هذا الملف ليس جدول حاسب الكواشين. صدّر CSV من حاسب الكواشين أو استخدم «لصق جدول».', 7000); return; }
+  const out = []; let dead = null;
+  for (const r of rows.slice(hi + 1)) {
+    const name = String(r[2] || '').replace(/^\s*↳\s*/, '').trim(), a = parseFloat(String(r[6] || '').replace(/,/g, ''));
+    if (!name || name === 'المجموع' || !(a > 0)) continue;
+    if (r[3] === 'وريث') { if (dead) { dead.drop = true; out.push({ n: name, a, of: dead.n }); } continue; }
+    const o = { n: name, a }; dead = r[3] === 'متوفى' ? o : null; out.push(o);
+  }
+  const g = rows.slice(0, hi), cell = (k) => { for (const r of g) { const i = r.indexOf(k); if (i >= 0) return r[i + 1] || ''; } return ''; };
+  applyKData({ h: { vil: cell('القرية'), basin: cell('الحوض'), parcel: cell('رقم القطعة') }, owners: out.filter(o => !o.drop) });
+}
 const loadScript = src => new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load')); document.head.appendChild(s); });
 const CDN = 'lib/';
 $('pdfFile').addEventListener('change', async e => {
   const f = e.target.files[0]; if (!f) return; e.target.value = '';
+  if (/\.csv$/i.test(f.name) || f.type === 'text/csv') { try { importKCsv(await f.text()); } catch (err) { toast('تعذرت قراءة ملف CSV.'); } return; }
   try {
     toast('جاري قراءة الملف…', 20000);
     await loadScript(CDN + 'pdf.js/3.11.174/pdf.worker.min.js');
     await loadScript(CDN + 'pdf.js/3.11.174/pdf.min.js');
     pdfjsLib.GlobalWorkerOptions.workerSrc = CDN + 'pdf.js/3.11.174/pdf.worker.min.js';
     const doc = await pdfjsLib.getDocument({ data: await f.arrayBuffer(), isEvalSupported: false, disableFontFace: true }).promise;
+    /* حاسب الكواشين (3.7 وما بعد) يضع داخل الـPDF بيانات مخفية: الاسم والمساحة لكل مالك */
+    let kw = ''; try { const md = await doc.getMetadata(); kw = String((md && md.info && md.info.Keywords) || ''); } catch (x) {}
+    const km = kw.match(/IFRAZ1:([A-Za-z0-9+/=]+)/);
+    if (km) { applyKData(JSON.parse(decodeURIComponent(escape(atob(km[1]))))); return; }
     const lines = [];
     for (let p = 1; p <= doc.numPages; p++) {
       const tc = await (await doc.getPage(p)).getTextContent(), g = new Map();
       tc.items.forEach(it => { if (!it.str || !it.str.trim()) return; const y = Math.round(it.transform[5] / 3); if (!g.has(y)) g.set(y, []); g.get(y).push(it); });
       [...g.entries()].sort((a, b) => b[0] - a[0]).forEach(([, its]) => lines.push(its.sort((a, b) => b.transform[4] - a.transform[4]).map(t => t.str.trim()).join('    ')));
     }
-    if (!lines.join('').replace(/\s/g, '')) { toast('ملف الـPDF صورة بدون نص قابل للقراءة. استخدم «لصق جدول» أو أدخل الحصص يدوياً.', 6000); $('ownersPasteBox').hidden = false; return; }
+    if (!lines.join('').replace(/\s/g, '')) { toast('هذا الـPDF صورة بدون بيانات، صادر من نسخة قديمة من حاسب الكواشين. حدّث حاسب الكواشين إلى 3.7 وصدّر الـPDF من جديد، أو صدّر منه ملف CSV واستورده هنا.', 9000); return; }
     const rows = parseRows(lines.join('\n'));
     $('ownersText').value = rows.length ? rows.map(r => r.name + '    ' + r.area).join('\n') : lines.join('\n');
     $('ownersPasteBox').hidden = false;
