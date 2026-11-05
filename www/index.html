@@ -153,6 +153,7 @@ tr:last-child td{border-bottom:0}
     <label class="btn primary">استيراد من حاسب الكواشين (PDF أو CSV)<input type="file" id="pdfFile" accept="application/pdf,.pdf,.csv,text/csv"></label>
     <button id="togglePasteOwners">لصق جدول</button>
     <button id="addOwner">+ مالك</button>
+    <button id="fromHisas" hidden>خذ الحصص من حاسب الكواشين</button>
   </div>
   <div id="ownersPasteBox" hidden class="field">
     <label for="ownersText">كل سطر: الاسم ثم المساحة م² (أو الحصص). راجع الأسماء والأرقام قبل الاعتماد.</label>
@@ -954,6 +955,10 @@ function importKCsv(text) {
   const g = rows.slice(0, hi), cell = (k) => { for (const r of g) { const i = r.indexOf(k); if (i >= 0) return r[i + 1] || ''; } return ''; };
   applyKData({ h: { vil: cell('القرية'), basin: cell('الحوض'), parcel: cell('رقم القطعة') }, owners: out.filter(o => !o.drop) });
 }
+/* داخل تطبيق «المساح إسلام» يقرأ الإفراز الحصص مباشرة مما حفظه حاسب الكواشين على نفس الجهاز */
+function hisasData() { try { const d = JSON.parse(localStorage.getItem('hisas-ifraz') || 'null'); return d && d.owners && d.owners.length ? d : null; } catch (e) { return null; } }
+(() => { const d = hisasData(); if (d) { $('fromHisas').hidden = false; $('fromHisas').title = [d.h && d.h.vil, d.h && d.h.parcel ? 'قطعة ' + d.h.parcel : ''].filter(Boolean).join(' – '); } })();
+$('fromHisas').addEventListener('click', () => { const d = hisasData(); if (d) applyKData(d); else toast('لا توجد حصص محفوظة في حاسب الكواشين.'); });
 const loadScript = src => new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load')); document.head.appendChild(s); });
 const CDN = 'lib/';
 $('pdfFile').addEventListener('change', async e => {
@@ -1262,6 +1267,15 @@ function renderManual(p) {
 const dlP = (window.claude && claude.use) ? claude.use('downloads').catch(() => null) : Promise.resolve(null);
 const inViewer = !!(window.claude && claude.use);
 async function saveFile(name, blob) {
+  if (window.AndroidBridge && AndroidBridge.saveFile) {
+    /* داخل تطبيق «المساح إسلام»: يُحفظ في التنزيلات وتفتح نافذة المشاركة */
+    try {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+      const mime = /\.pdf$/i.test(name) ? 'application/pdf' : /\.csv$/i.test(name) ? 'text/csv' : 'application/octet-stream';
+      AndroidBridge.saveFile(name, b64, mime);
+    } catch (e) { toast('تعذر حفظ الملف.'); }
+    return;
+  }
   const cap = window.Capacitor;
   if (cap && cap.isNativePlatform && cap.isNativePlatform()) {
     /* داخل تطبيق الأندرويد: نكتب الملف ثم نفتح نافذة المشاركة (واتساب، Drive، الملفات...) */
